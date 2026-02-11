@@ -1,0 +1,11 @@
+data/
+*.bin
+*.pcd
+*.las
+*.laz
+__pycache__/
+.ipynb_checkpoints/
+
+.venv
+
+data/
