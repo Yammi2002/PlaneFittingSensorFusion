@@ -1,68 +1,99 @@
-import numpy as np
-from PIL import Image
+import json
 import open3d as o3d
-from utils.GeometryEngine import compute_transformation_matrix, project_lidar_to_camera
-from utils.Dataloader import get_calibration_data, get_sample_token_from_file, find_sensor_file
+from utils.Dataloader import get_sensors_for_sample
+from utils.GeometryEngine import compute_point_cloud, color_point_cloud
+
+"""
+Main Pipeline Script: Sensor Fusion & Road Estimation.
+
+This script orchestrates the entire perception pipeline for a specific scene sample.
+It performs the following high-level operations:
+1. Data Retrieval: Fetches synchronized LiDAR, Camera, and Radar data from the dataset.
+2. Geometric Fusion: Aggregates multi-sensor point clouds into a single unified Ego-Vehicle frame.
+3. Photometric Fusion: Projects 3D points onto camera images to assign RGB colors (Texture Mapping).
+4. Scene Analysis: Uses RANSAC algorithm to segment the ground plane (Road) from obstacles.
+5. Visualization: Renders the final 3D scene using Open3D.
+"""
 
 def main():
-    # --- CONFIGURAZIONE ---
-    base_path = "../data/metadata/man-truckscenes/v1.1-mini"
-    data_root = "../data/sensordata/man-truckscenes"
     
-    lidar_token = "3f53edcde9e44caaba5e689726c7aab7" 
-    camera_token = "34b35c4e51844611bf27f578cad4fbc9"
-    target_lidar_file = "LIDAR_TOP_FRONT_1692868171700983.pcd"
+    # --- 1. CONFIGURATION & METADATA LOADING ---
+    # Define paths to metadata files (Ensure these match your local directory structure)
+    path_sample_data = "../data/metadata/man-truckscenes/v1.1-mini/sample_data.json"
+    path_calib_data = "../data/metadata/man-truckscenes/v1.1-mini/calibrated_sensor.json"
 
-    # 1. RECUPERO DATI (Metadata)
-    print("Recupero calibrazioni...")
-    lidar_calib = get_calibration_data(f"{base_path}/calibrated_sensor.json", lidar_token)
-    cam_calib = get_calibration_data(f"{base_path}/calibrated_sensor.json", camera_token)
-    
-    # Trova il sample token e l'immagine corrispondente
-    sample_token = get_sample_token_from_file(f"{base_path}/sample_data.json", target_lidar_file)
-    if not sample_token:
-        print("Sample token non trovato!"); exit()
+    print("--- 1. Loading Metadata Database ---")
+    with open(path_sample_data) as f:
+        data = json.load(f)
         
-    cam_filename = find_sensor_file(f"{base_path}/sample_data.json", sample_token, "CAMERA_RIGHT_FRONT")
-    if not cam_filename:
-        print("Immagine non trovata!"); exit()
-
-    # 2. CARICAMENTO ASSET (IO)
-    print(f"Carico {cam_filename}...")
-    img = np.asarray(Image.open(f"{data_root}/{cam_filename}"))
-    if img.dtype == np.uint8: img = img.astype(np.float32) / 255.0
-    H, W = img.shape[:2]
-
-    pcd = o3d.io.read_point_cloud(f"{data_root}/samples/LIDAR_TOP_FRONT/{target_lidar_file}")
-    pts = np.asarray(pcd.points)
-
-    # 3. GEOMETRIA (Math)
-    # Calcolo matrici
-    M_lidar = compute_transformation_matrix(lidar_calib['translation'], lidar_calib['rotation'])
-    M_cam = compute_transformation_matrix(cam_calib['translation'], cam_calib['rotation'])
-    M_lidar_to_cam = np.linalg.inv(M_cam) @ M_lidar
-    K = np.array(cam_calib['camera_intrinsic'])
-
-    # Proiezione pura
-    uv, depth, mask = project_lidar_to_camera(pts, M_lidar_to_cam, K, W, H)
-
-    # 4. COLORING & VISUALIZATION
-    print(f"Punti proiettati validi: {np.sum(mask)}")
+    # Target Sample Token (Represents a specific timestamp in the scene)
+    target_token = "deb7b3f332f042d49e7636d6e4959354" 
     
-    # Estrai colori
-    uv_valid = np.round(uv[mask]).astype(int)
-    colors = img[uv_valid[:, 1], uv_valid[:, 0]] # Nota: v, u
+    print(f"Retrieving sensors for sample token: {target_token}")
     
-    # Crea nuvola finale
-    pcd_colored = o3d.geometry.PointCloud()
-    pcd_colored.points = o3d.utility.Vector3dVector(pts[mask])
-    pcd_colored.colors = o3d.utility.Vector3dVector(colors)
-
-    # Segmentazione piano (Road Fitting)
-    plane, inliers = pcd_colored.segment_plane(distance_threshold=0.3, ransac_n=3, num_iterations=1000)
-    print(f"Equazione strada: {plane}")
+    # Extract synchronized file paths for all available sensors
+    lidars, cameras, radars = get_sensors_for_sample(data, target_token)
     
-    o3d.visualization.draw_geometries([pcd_colored])
+    print(f"  -> Found: {len(lidars)} LiDARS, {len(cameras)} Cameras, {len(radars)} Radars")
 
+    # --- 2. GEOMETRIC FUSION (Ego-Frame Aggregation) ---
+    print("\n--- 2. Geometric Fusion (Point Cloud Generation) ---")
+    
+    # Combine LiDAR and Radar points into a single coordinate system (Ego-Vehicle)
+    # We pass the calibration path to compute extrinsic transformations (R|T)
+    total_points = compute_point_cloud(path_calib_data, lidars, radars)
+
+    print(f"  -> Aggregated Cloud Size: {total_points.shape[0]} points")
+
+    if len(total_points) == 0:
+        print("Error: Generated point cloud is empty. Exiting.")
+        return
+
+    # --- 3. PHOTOMETRIC FUSION (Colorization) ---
+    print("\n--- 3. Photometric Fusion (3D-to-2D Projection) ---")
+    
+    # Project 3D points onto the 6 camera images to extract RGB values.
+    # Points not visible to any camera will remain grey (default).
+    final_colors = color_point_cloud(total_points, cameras, path_calib_data)
+
+    # --- 4. DATA STRUCTURE CREATION ---
+    print("\n--- 4. Building Open3D Object ---")
+    pcd_final = o3d.geometry.PointCloud()
+    
+    # Assign Geometry (XYZ) and Texture (RGB)
+    pcd_final.points = o3d.utility.Vector3dVector(total_points)
+    pcd_final.colors = o3d.utility.Vector3dVector(final_colors)
+    
+    # Create a reference coordinate frame (Origin 0,0,0 is the center of the Truck)
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=2.0, origin=[0, 0, 0])
+    
+    # --- 5. SCENE ANALYSIS (Road Fitting via RANSAC) ---
+    print("\n--- 5. Road Segmentation (RANSAC) ---")
+    
+    # Apply RANSAC to find the dominant plane (The Road).
+    # distance_threshold=0.25: Points within 25cm of the plane are considered 'Road'
+    plane_model, inliers = pcd_final.segment_plane(distance_threshold=0.25,
+                                             ransac_n=3,
+                                             num_iterations=2000)
+    
+    [a, b, c, d] = plane_model
+    print(f"  -> Road Plane Equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
+
+    # Split the cloud into two sets:
+    # 1. Inliers = The Road
+    # 2. Outliers = Everything else (Obstacles, Buildings, etc.)
+    road_cloud = pcd_final.select_by_index(inliers)
+    obstacle_cloud = pcd_final.select_by_index(inliers, invert=True)
+
+    # VISUALIZATION TWEAK: Paint the road Red to distinguish it from the rest.
+    # Comment out this line if you want to see the real asphalt color.
+    road_cloud.paint_uniform_color([1.0, 0, 0]) 
+
+    # --- 6. VISUALIZATION ---
+    print("\n--- 6. Rendering Scene ---")
+    o3d.visualization.draw_geometries([road_cloud, obstacle_cloud, axis], 
+                                      window_name="Sensor Fusion + Road Fitting",
+                                      width=1280, height=720)
+        
 if __name__ == "__main__":
     main()
