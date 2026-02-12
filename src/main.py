@@ -5,10 +5,6 @@ import numpy as np
 from utils.Dataloader import get_sensors_for_sample
 from utils.GeometryEngine import compute_point_cloud, color_point_cloud
 
-# Configurations
-CURRENT_TOKEN = "e43ae3c9b670423d89fe92170f0c87e9" # Start Token (First frame of the scene)
-CAMERA_ZOOM = 0.1
-
 """
 Main Pipeline Script: Automatic Sensor Fusion Player with Road Segmentation.
 
@@ -26,7 +22,10 @@ def main():
     path_sample = f"{base_path}/sample.json"
     path_sample_data = f"{base_path}/sample_data.json" 
     path_calib = f"{base_path}/calibrated_sensor.json"
-
+    # Configurations
+    CURRENT_TOKEN = "e43ae3c9b670423d89fe92170f0c87e9" # Start Token (First frame of the scene)
+    CAMERA_ZOOM = 0.1
+    
     print("--- 1. Loading Metadata Database ---")
     
     with open(path_sample) as f:
