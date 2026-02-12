@@ -1,99 +1,151 @@
 import json
+import time
 import open3d as o3d
+import numpy as np
 from utils.Dataloader import get_sensors_for_sample
 from utils.GeometryEngine import compute_point_cloud, color_point_cloud
 
-"""
-Main Pipeline Script: Sensor Fusion & Road Estimation.
+# Configurations
+CURRENT_TOKEN = "e43ae3c9b670423d89fe92170f0c87e9" # Start Token (First frame of the scene)
+CAMERA_ZOOM = 0.1
 
-This script orchestrates the entire perception pipeline for a specific scene sample.
-It performs the following high-level operations:
-1. Data Retrieval: Fetches synchronized LiDAR, Camera, and Radar data from the dataset.
-2. Geometric Fusion: Aggregates multi-sensor point clouds into a single unified Ego-Vehicle frame.
-3. Photometric Fusion: Projects 3D points onto camera images to assign RGB colors (Texture Mapping).
-4. Scene Analysis: Uses RANSAC algorithm to segment the ground plane (Road) from obstacles.
-5. Visualization: Renders the final 3D scene using Open3D.
+"""
+Main Pipeline Script: Automatic Sensor Fusion Player with Road Segmentation.
+
+This script iterates through a scene temporally, performing:
+1. Geometric Fusion (LiDAR + Radar).
+2. Photometric Fusion (Camera projection).
+3. Road Segmentation (RANSAC) in real-time.
+4. Continuous 3D rendering.
 """
 
 def main():
     
     # --- 1. CONFIGURATION & METADATA LOADING ---
-    # Define paths to metadata files (Ensure these match your local directory structure)
-    path_sample_data = "../data/metadata/man-truckscenes/v1.1-mini/sample_data.json"
-    path_calib_data = "../data/metadata/man-truckscenes/v1.1-mini/calibrated_sensor.json"
+    base_path = "../data/metadata/man-truckscenes/v1.1-mini"
+    path_sample = f"{base_path}/sample.json"
+    path_sample_data = f"{base_path}/sample_data.json" 
+    path_calib = f"{base_path}/calibrated_sensor.json"
 
     print("--- 1. Loading Metadata Database ---")
+    
+    with open(path_sample) as f:
+        samples = json.load(f)
+    
+    samples_dict = {s['token']: s for s in samples}
+
     with open(path_sample_data) as f:
-        data = json.load(f)
-        
-    # Target Sample Token (Represents a specific timestamp in the scene)
-    target_token = "deb7b3f332f042d49e7636d6e4959354" 
-    
-    print(f"Retrieving sensors for sample token: {target_token}")
-    
-    # Extract synchronized file paths for all available sensors
-    lidars, cameras, radars = get_sensors_for_sample(data, target_token)
-    
-    print(f"  -> Found: {len(lidars)} LiDARS, {len(cameras)} Cameras, {len(radars)} Radars")
+        data_sensor = json.load(f)
 
-    # --- 2. GEOMETRIC FUSION (Ego-Frame Aggregation) ---
-    print("\n--- 2. Geometric Fusion (Point Cloud Generation) ---")
+    # --- 2. INITIALIZATION ---
     
-    # Combine LiDAR and Radar points into a single coordinate system (Ego-Vehicle)
-    # We pass the calibration path to compute extrinsic transformations (R|T)
-    total_points = compute_point_cloud(path_calib_data, lidars, radars)
-
-    print(f"  -> Aggregated Cloud Size: {total_points.shape[0]} points")
-
-    if len(total_points) == 0:
-        print("Error: Generated point cloud is empty. Exiting.")
-        return
-
-    # --- 3. PHOTOMETRIC FUSION (Colorization) ---
-    print("\n--- 3. Photometric Fusion (3D-to-2D Projection) ---")
+    # Setup Non-Blocking Visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name="Autonomous Truck Player + RANSAC", width=1280, height=720)
     
-    # Project 3D points onto the 6 camera images to extract RGB values.
-    # Points not visible to any camera will remain grey (default).
-    final_colors = color_point_cloud(total_points, cameras, path_calib_data)
-
-    # --- 4. DATA STRUCTURE CREATION ---
-    print("\n--- 4. Building Open3D Object ---")
-    pcd_final = o3d.geometry.PointCloud()
+    # Initialize TWO empty point clouds: one for Road, one for Obstacles
+    pcd_road = o3d.geometry.PointCloud()
+    pcd_obstacles = o3d.geometry.PointCloud()
     
-    # Assign Geometry (XYZ) and Texture (RGB)
-    pcd_final.points = o3d.utility.Vector3dVector(total_points)
-    pcd_final.colors = o3d.utility.Vector3dVector(final_colors)
-    
-    # Create a reference coordinate frame (Origin 0,0,0 is the center of the Truck)
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=2.0, origin=[0, 0, 0])
     
-    # --- 5. SCENE ANALYSIS (Road Fitting via RANSAC) ---
-    print("\n--- 5. Road Segmentation (RANSAC) ---")
-    
-    # Apply RANSAC to find the dominant plane (The Road).
-    # distance_threshold=0.25: Points within 25cm of the plane are considered 'Road'
-    plane_model, inliers = pcd_final.segment_plane(distance_threshold=0.25,
-                                             ransac_n=3,
-                                             num_iterations=2000)
-    
-    [a, b, c, d] = plane_model
-    print(f"  -> Road Plane Equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
+    # Add geometries to the visualizer
+    vis.add_geometry(axis)
+    vis.add_geometry(pcd_road)      # Container for the road (Red)
+    vis.add_geometry(pcd_obstacles) # Container for obstacles (RGB)
 
-    # Split the cloud into two sets:
-    # 1. Inliers = The Road
-    # 2. Outliers = Everything else (Obstacles, Buildings, etc.)
-    road_cloud = pcd_final.select_by_index(inliers)
-    obstacle_cloud = pcd_final.select_by_index(inliers, invert=True)
+    # Visualization settings
+    opt = vis.get_render_option()
+    opt.background_color = np.asarray([0.1, 0.1, 0.1])
+    opt.point_size = 2.0
 
-    # VISUALIZATION TWEAK: Paint the road Red to distinguish it from the rest.
-    # Comment out this line if you want to see the real asphalt color.
-    road_cloud.paint_uniform_color([1.0, 0, 0]) 
+    print("\n--- STARTING PLAYBACK ---")
+    print("Press 'Q' to exit.")
 
-    # --- 6. VISUALIZATION ---
-    print("\n--- 6. Rendering Scene ---")
-    o3d.visualization.draw_geometries([road_cloud, obstacle_cloud, axis], 
-                                      window_name="Sensor Fusion + Road Fitting",
-                                      width=1280, height=720)
+    first_frame = True
+
+    # --- 3. TEMPORAL LOOP ---
+    while CURRENT_TOKEN != "":
+        start_time = time.time()
         
+        if CURRENT_TOKEN not in samples_dict:
+            break
+
+        print(f"Processing Sample: {CURRENT_TOKEN}")
+
+        # A. Data Retrieval
+        lidars, cameras, radars = get_sensors_for_sample(data_sensor, CURRENT_TOKEN)
+        
+        # B. Geometric Fusion
+        total_points = compute_point_cloud(path_calib, lidars, radars)
+        
+        if len(total_points) > 0:
+            # C. Photometric Fusion (Colorize Cloud)
+            final_colors = color_point_cloud(total_points, cameras, path_calib)
+
+            # --- D. RANSAC SEGMENTATION ---
+            # Create a temporary Open3D object just for calculation
+            temp_pcd = o3d.geometry.PointCloud()
+            temp_pcd.points = o3d.utility.Vector3dVector(total_points)
+            temp_pcd.colors = o3d.utility.Vector3dVector(final_colors)
+
+            # Apply RANSAC to find the road plane
+            # distance_threshold=0.20 (20cm tolerance)
+            _, inliers = temp_pcd.segment_plane(distance_threshold=0.20,
+                                              ransac_n=3,
+                                              num_iterations=1000) # Lower iterations for speed
+
+            # Split Data
+            road_cloud = temp_pcd.select_by_index(inliers)
+            obstacle_cloud = temp_pcd.select_by_index(inliers, invert=True)
+
+            # Paint Road RED for visualization clarity
+            road_cloud.paint_uniform_color([1.0, 0, 0])
+
+            # --- E. UPDATE VISUALIZER ---
+            # Update the persistent objects with new data
+            pcd_road.points = road_cloud.points
+            pcd_road.colors = road_cloud.colors
+            
+            pcd_obstacles.points = obstacle_cloud.points
+            pcd_obstacles.colors = obstacle_cloud.colors
+
+            # Notify visualizer
+            if first_frame:
+                vis.add_geometry(pcd_road)
+                vis.add_geometry(pcd_obstacles)
+                vis.add_geometry(axis)
+
+                # --- Camera settings
+                ctr = vis.get_view_control()
+                
+                # 1. Set camera center
+                ctr.set_lookat([0, 0, 0]) 
+                
+                # 2. Set the Z axis
+                ctr.set_up([0, 0, 1])
+                
+                # 3. Set camera front side
+                ctr.set_front([-1.0, 0.0, 0.5]) 
+                
+                # 4. Zoom, lower values put camera closer
+                ctr.set_zoom(CAMERA_ZOOM) 
+                
+                first_frame = False
+            else:
+                vis.update_geometry(pcd_road)
+                vis.update_geometry(pcd_obstacles)
+                vis.update_geometry(axis)
+
+            vis.poll_events()
+            vis.update_renderer()
+
+        # F. Navigation & Timing
+        next_token = samples_dict[CURRENT_TOKEN]['next']
+        CURRENT_TOKEN = next_token 
+            
+    vis.destroy_window()
+    print("Playback finished.")
+
 if __name__ == "__main__":
     main()
