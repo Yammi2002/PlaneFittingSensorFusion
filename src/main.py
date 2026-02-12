@@ -23,7 +23,7 @@ def main():
     path_sample_data = f"{base_path}/sample_data.json" 
     path_calib = f"{base_path}/calibrated_sensor.json"
 
-    CURRENT_TOKEN = "c697554e47f54d808bc04430ee0c096a" # Start Token (First frame of the scene)
+    CURRENT_TOKEN = "fa2acde00fe3439786ccd631c78fd641" # Start Token (First frame of the scene)
     CAMERA_ZOOM = 0.1
     
     print("--- 1. Loading Metadata Database ---")
