@@ -17,7 +17,7 @@ This script iterates through a scene temporally, performing:
 
 def main():
     
-    # --- 1. CONFIGURATION & METADATA LOADING ---
+    # 1. Configuration
     base_path = "../data/metadata/man-truckscenes/v1.1-mini"
     path_sample = f"{base_path}/sample.json"
     path_sample_data = f"{base_path}/sample_data.json" 
@@ -36,7 +36,7 @@ def main():
     with open(path_sample_data) as f:
         data_sensor = json.load(f)
 
-    # --- 2. INITIALIZATION ---
+    # 2. Initialization
     
     # Setup Non-Blocking Visualizer
     vis = o3d.visualization.Visualizer()
@@ -63,7 +63,7 @@ def main():
 
     first_frame = True
 
-    # --- 3. TEMPORAL LOOP ---
+    # 3. Scene loop
     while CURRENT_TOKEN != "":
         start_time = time.time()
         
