@@ -3,7 +3,7 @@ import time
 import open3d as o3d
 import numpy as np
 from utils.Dataloader import get_sensors_for_sample
-from utils.GeometryEngine import compute_point_cloud, color_point_cloud
+from utils.GeometryEngine import compute_point_cloud, color_point_cloud, fit_plane_irls
 
 """
 Main Pipeline Script: Automatic Sensor Fusion Player with Road Segmentation.
@@ -11,7 +11,7 @@ Main Pipeline Script: Automatic Sensor Fusion Player with Road Segmentation.
 This script iterates through a scene temporally, performing:
 1. Geometric Fusion (LiDAR + Radar).
 2. Photometric Fusion (Camera projection).
-3. Road Segmentation (RANSAC) in real-time.
+3. Road Segmentation (IRLS) in real-time.
 4. Continuous 3D rendering.
 """
 
@@ -22,8 +22,8 @@ def main():
     path_sample = f"{base_path}/sample.json"
     path_sample_data = f"{base_path}/sample_data.json" 
     path_calib = f"{base_path}/calibrated_sensor.json"
-    # Configurations
-    CURRENT_TOKEN = "e43ae3c9b670423d89fe92170f0c87e9" # Start Token (First frame of the scene)
+
+    CURRENT_TOKEN = "c697554e47f54d808bc04430ee0c096a" # Start Token (First frame of the scene)
     CAMERA_ZOOM = 0.1
     
     print("--- 1. Loading Metadata Database ---")
@@ -40,7 +40,7 @@ def main():
     
     # Setup Non-Blocking Visualizer
     vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="Autonomous Truck Player + RANSAC", width=1280, height=720)
+    vis.create_window(window_name="Truck Player", width=1280, height=720)
     
     # Initialize TWO empty point clouds: one for Road, one for Obstacles
     pcd_road = o3d.geometry.PointCloud()
@@ -82,17 +82,15 @@ def main():
             # C. Photometric Fusion (Colorize Cloud)
             final_colors = color_point_cloud(total_points, cameras, path_calib)
 
-            # --- D. RANSAC SEGMENTATION ---
+            # D. IRLS segmentation
             # Create a temporary Open3D object just for calculation
             temp_pcd = o3d.geometry.PointCloud()
             temp_pcd.points = o3d.utility.Vector3dVector(total_points)
             temp_pcd.colors = o3d.utility.Vector3dVector(final_colors)
 
-            # Apply RANSAC to find the road plane
+            # Apply IRLS to find the road plane
             # distance_threshold=0.20 (20cm tolerance)
-            _, inliers = temp_pcd.segment_plane(distance_threshold=0.20,
-                                              ransac_n=3,
-                                              num_iterations=1000) # Lower iterations for speed
+            plane_model, inliers = fit_plane_irls(total_points, n_iter=10, threshold=0.10)
 
             # Split Data
             road_cloud = temp_pcd.select_by_index(inliers)
@@ -101,7 +99,7 @@ def main():
             # Paint Road RED for visualization clarity
             road_cloud.paint_uniform_color([1.0, 0, 0])
 
-            # --- E. UPDATE VISUALIZER ---
+            # E. Visualizer
             # Update the persistent objects with new data
             pcd_road.points = road_cloud.points
             pcd_road.colors = road_cloud.colors

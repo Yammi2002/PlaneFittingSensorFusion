@@ -1,12 +1,12 @@
-# LiDAR, Radar & Camera Fusion with RANSAC Ground Fitting
+# LiDAR, Radar & Camera Fusion with IRLS Ground Fitting
 
 **A robust framework made with Python and open3d for autonomous vehicle perception, designed to fuse LiDAR, Radar, and Camera data into a unified 3D representation.**
 
-This project implements a complete sensor fusion pipeline using the MAN TruckScenes dataset. It aligns multi-modal sensor data into a common Ego-Vehicle coordinate system, performs texture mapping for visualization, and executes real-time ground plane segmentation using the RANSAC algorithm.
+This project implements a complete sensor fusion pipeline using the MAN TruckScenes dataset. It aligns multi-modal sensor data into a common Ego-Vehicle coordinate system, performs texture mapping for visualization, and executes real-time ground plane segmentation using the IRLS approach.
 
 For each scene, data from LiDARs and Radars are combined to create a point cloud around the truck. Using intrinsic and extrinsic parameters, camera data is used to obtain color information, which is fused together to color the points in the scene.
 
-To capture the road plane, the RANSAC algorithm is used; this information is color-coded in the final visualization.
+To capture the road plane, the IRLS approach is used; this information is color-coded in the final visualization.
 
 ---
 
@@ -15,7 +15,7 @@ To capture the road plane, the RANSAC algorithm is used; this information is col
 * **Data Retrieval & Management:** Efficient parsing of metadata (JSON) to synchronize sensor streams (LiDAR, Radar, Camera) based on temporal tokens.
 * **Geometric Fusion:** Transformation of raw point clouds from sensor-local coordinates to the **Ego-Vehicle Frame** using extrinsic calibration matrices.
 * **Photometric Fusion (Texture Mapping):** Projection of 3D points onto 2D camera image planes using intrinsic matrices to colorize the point cloud with RGB information.
-* **Scene Understanding (RANSAC):** Real-time implementation of the RANSAC algorithm to segment the road from obstacles.
+* **Scene Understanding:** Real-time implementation of the IRLS approach to segment the road from obstacles.
 * **Interactive Visualization:** A custom non-blocking **Open3D** player that renders the fused scene as a continuous 3D video.
 
 ---
@@ -49,7 +49,7 @@ mkdir -p data/metadata
 mkdir -p data/sensordata
 ```
 Download dataset "mini" from https://brandportal.man/d/QSf8mPdU5Hgj/downloads#/-/dataset.
-After the download finishes, extract folder's content in the correct project folders (metadata and sensordata).
+After the download finishes, extract folder contents in the correct project folders (metadata and sensordata).
 
 Install the necessary libraries
 ```bash
