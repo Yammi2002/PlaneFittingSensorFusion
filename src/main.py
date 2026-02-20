@@ -23,8 +23,8 @@ def main():
     path_sample_data = f"{base_path}/sample_data.json" 
     path_calib = f"{base_path}/calibrated_sensor.json"
 
-    CURRENT_TOKEN = "fa2acde00fe3439786ccd631c78fd641" # Start Token (First frame of the scene)
-    CAMERA_ZOOM = 0.1
+    CURRENT_TOKEN = "32d2bcf46e734dffb14fe2e0a823d059" # Start Token (First frame of the scene)
+    CAMERA_ZOOM = 0.05
     
     print("--- 1. Loading Metadata Database ---")
     
@@ -90,7 +90,7 @@ def main():
 
             # Apply IRLS to find the road plane
             # distance_threshold=0.20 (20cm tolerance)
-            plane_model, inliers = fit_plane_irls(total_points, n_iter=10, threshold=0.10)
+            plane_model, inliers = fit_plane_irls(total_points, n_iter=10, threshold=0.30)
 
             # Split Data
             road_cloud = temp_pcd.select_by_index(inliers)
