@@ -244,11 +244,10 @@ def fit_plane_irls(points, threshold=0.15, n_iter=10, loss_type='tukey'):
             # Huber Loss Weights: 1 if |r| <= k, else k / |r|
             weights = np.where(residuals <= effective_thresh, 
                                1.0, 
-                               effective_thresh / (residuals + 1e-6))
+                               effective_thresh / (residuals + 1e-6)) # to avoid division by zero
             
         elif loss_type == 'tukey':
             # Tukey's Biweight: (1 - (r/c)^2)^2 if |r| <= c, else 0
-            # Aggiungiamo un epsilon (1e-4) ai pesi a zero per evitare matrici singolari
             mask = residuals <= effective_thresh
             weights = np.where(mask, 
                                (1.0 - (residuals / effective_thresh)**2)**2, 
