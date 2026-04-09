@@ -198,17 +198,15 @@ def color_point_cloud(total_points, camera_data, calib_json_path):
 
     return point_colors
 
-def fit_plane_irls(points, threshold=0.10, n_iter=10):
+def fit_plane_irls(points, threshold=0.15, n_iter=10, loss_type='tukey'):
     """
     Robust Plane Fitting using Iteratively Reweighted Least Squares (IRLS).
     
-    This approach is deterministic and iteratively refines the plane model by down-weighting outliers.
-    It is initialized assuming a roughly horizontal road surface.
-
     Args:
         points (np.array): (N, 3) Point cloud data.
-        threshold (float): Distance threshold for inliers (e.g., 0.10m).
+        threshold (float): Tuning constant for the robust estimators.
         n_iter (int): Number of refinement iterations.
+        loss_type (str): 'l2', 'huber', or 'tukey'.
         
     Returns:
         plane_model: [a, b, c, d] for equation ax + by + cz + d = 0
@@ -216,72 +214,61 @@ def fit_plane_irls(points, threshold=0.10, n_iter=10):
     """
     N = len(points)
     if N < 3:
-        return [0,0,1,0], []
+        return [0, 0, 1, 0], []
 
-    # Extract coordinates for vectorized operations
     X = points[:, 0]
     Y = points[:, 1]
     Z = points[:, 2]
 
-    # 1. Initialization
-    # We use a lower percentile (20th) to estimate the ground height.
-    # This aligns with the "Lowest Point Representative" (LPR) heuristic commonly 
-    # used in ground segmentation tasks.
+    # 1. Initialization using LPR (Lowest Point Representative) assumption
     current_d = np.percentile(Z, 20)    
-    # Initial parameters [a, b, d] for the explicit equation: z = ax + by + d
     params = np.array([0.0, 0.0, current_d]) 
-
-    # Construct the Design Matrix A for the linear system: z = a*x + b*y + d*1.
-    # This matrix contains the input coordinates used to solve the system.    
-    # Shape: (N, 3) -> Columns are [X, Y, 1]
+    
     A = np.column_stack((X, Y, np.ones(N)))
     
-    # 2. Refinement loop  
+    # 2. Refinement loop
     for i in range(n_iter):
         a, b, d_curr = params
-        
-        # Calculate expected Z values based on the current plane model
         expected_z = a * X + b * Y + d_curr
-        
-        # Calculate Residuals (Vertical distance from point to plane)
         residuals = np.abs(expected_z - Z)
         
-        # Soft-start strategy
-        # Problem: If the real road is sloped but we start flat (horizontal), 
-        # distant points on the slope might exceed the 10cm threshold immediately.
-        # Solution: In the first few iterations (i < 2), we relax the threshold (3x).
-        # This allows the plane to "tilt" and catch the slope before tightening the grip.
-        effective_threshold = threshold * 3.0 if i < 2 else threshold
+        # Soft-start strategy: relax threshold initially to catch sloped roads
+        effective_thresh = threshold * 3.0 if i < 2 else threshold
         
-        # Weight calculation
-        # We assign weights based on residuals:
-        # - Points close to the plane get weighted more with a value of 1.
-        # - Points far from the plane get weighted less, with a value approximately 0.
-        # This effectively filters out obstacles.
-        weights = np.where(residuals < effective_threshold, 1.0, 0.0001)
-        
-        # Solve least squares
-        # We solve the system: Weights * (A * x) = Weights * Z
-        # To use standard solvers, we multiply A and Z by sqrt(weights).
-        
+        # Compute weights based on the chosen Loss Function
+        if loss_type == 'l2':
+            # Ordinary Least Squares (Baseline for comparison)
+            weights = np.ones_like(residuals)
+            
+        elif loss_type == 'huber':
+            # Huber Loss Weights: 1 if |r| <= k, else k / |r|
+            weights = np.where(residuals <= effective_thresh, 
+                               1.0, 
+                               effective_thresh / (residuals + 1e-6))
+            
+        elif loss_type == 'tukey':
+            # Tukey's Biweight: (1 - (r/c)^2)^2 if |r| <= c, else 0
+            # Aggiungiamo un epsilon (1e-4) ai pesi a zero per evitare matrici singolari
+            mask = residuals <= effective_thresh
+            weights = np.where(mask, 
+                               (1.0 - (residuals / effective_thresh)**2)**2, 
+                               1e-4)
+        else:
+            raise ValueError("loss_type must be 'l2', 'huber', or 'tukey'")
+            
+        # Solve Weighted Least Squares
         sqrt_w = np.sqrt(weights)[:, np.newaxis]
         A_weighted = A * sqrt_w
         Z_weighted = Z * sqrt_w.flatten()
         
         try:
-            # Solve for new parameters [a, b, d] that minimize weighted error
             result = np.linalg.lstsq(A_weighted, Z_weighted, rcond=None)
-            params = result[0] # Here we have the new parameters
+            params = result[0]
         except np.linalg.LinAlgError:
             break 
 
-    # 3. Final model conversion
-    # We have parameters for: z = ax + by + d
-    # Open3D expects implicit form: ax + by + cz + d = 0, so we have to rearrange values.
+    # 3. Final model conversion (Explicit to Implicit)
     a_final, b_final, d_final = params
-    
-    # Normalization: The normal vector (a, b, c) must have length 1.
-    # This ensures that ax+by+cz+d represents the true Euclidean distance.
     normal_len = np.sqrt(a_final**2 + b_final**2 + 1.0)
     
     final_a = a_final / normal_len
@@ -291,11 +278,28 @@ def fit_plane_irls(points, threshold=0.10, n_iter=10):
     
     plane_model = [final_a, final_b, final_c, final_d]
     
-    # 4. Inlier extracto
-    # Re-calculate precise Euclidean distances using the final normalized model
+    # 4. Inlier extraction
     dist_final = np.abs(final_a * X + final_b * Y + final_c * Z + final_d)
-    
-    # Select indices where distance is within the strict threshold
     inliers = np.where(dist_final < threshold)[0]
     
     return plane_model, inliers
+
+
+def compute_metrics(curr_plane, prev_plane, points_inliers):
+    metrics = {}
+    
+    a, b, c, d = curr_plane
+    distances = np.abs(a * points_inliers[:, 0] + b * points_inliers[:, 1] + c * points_inliers[:, 2] + d)
+    metrics['mae'] = np.mean(distances) if len(distances) > 0 else 0.0
+    
+    if prev_plane is not None:
+        n1 = np.array(prev_plane[:3])
+        n2 = np.array(curr_plane[:3])
+        
+        dot_product = np.clip(np.dot(n1, n2), -1.0, 1.0)
+        angle_rad = np.arccos(dot_product)
+        metrics['delta_angle_deg'] = np.degrees(angle_rad)
+    else:
+        metrics['delta_angle_deg'] = 0.0
+        
+    return metrics

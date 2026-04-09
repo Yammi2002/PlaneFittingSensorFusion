@@ -3,7 +3,7 @@ import time
 import open3d as o3d
 import numpy as np
 from utils.Dataloader import get_sensors_for_sample
-from utils.GeometryEngine import compute_point_cloud, color_point_cloud, fit_plane_irls
+from utils.GeometryEngine import compute_point_cloud, color_point_cloud, fit_plane_irls, compute_metrics
 
 """
 Main Pipeline Script: Automatic Sensor Fusion Player with Road Segmentation.
@@ -23,8 +23,9 @@ def main():
     path_sample_data = f"{base_path}/sample_data.json" 
     path_calib = f"{base_path}/calibrated_sensor.json"
 
-    CURRENT_TOKEN = "32d2bcf46e734dffb14fe2e0a823d059" # Start Token (First frame of the scene)
+    CURRENT_TOKEN = "c697554e47f54d808bc04430ee0c096a" # Start Token (First frame of the scene)
     CAMERA_ZOOM = 0.05
+    LOSS = 'l2' # tukey, huber, l2
     
     print("--- 1. Loading Metadata Database ---")
     
@@ -63,13 +64,14 @@ def main():
 
     first_frame = True
 
+    prev_plane = None
+
     # 3. Scene loop
     while CURRENT_TOKEN != "":
-        start_time = time.time()
         
         if CURRENT_TOKEN not in samples_dict:
             break
-
+                        
         print(f"Processing Sample: {CURRENT_TOKEN}")
 
         # A. Data Retrieval
@@ -88,13 +90,67 @@ def main():
             temp_pcd.points = o3d.utility.Vector3dVector(total_points)
             temp_pcd.colors = o3d.utility.Vector3dVector(final_colors)
 
-            # Apply IRLS to find the road plane
-            # distance_threshold=0.20 (20cm tolerance)
-            plane_model, inliers = fit_plane_irls(total_points, n_iter=10, threshold=0.30)
+            loss_to_validate = LOSS 
+            plane_model, inliers_idx = fit_plane_irls(total_points, n_iter=10, threshold=0.15, loss_type=loss_to_validate)
+            if CURRENT_TOKEN == '03595fbbc36e4b509eec679e8fbfe3b0':
+                filename = f"pointcloud_{CURRENT_TOKEN}.pcd" 
+                o3d.io.write_point_cloud(filename, temp_pcd)
+            
+            if CURRENT_TOKEN == "03595fbbc36e4b509eec679e8fbfe3b0":
+                print(f"\n Plane coefficients: {plane_model}")
+
+                import os
+                gt_file = "frame_0_raw.pcd" 
+                
+                if os.path.exists(gt_file):
+                    pcd_gt = o3d.io.read_point_cloud(gt_file)
+                    pts_gt = np.asarray(pcd_gt.points)
+                    
+                    if len(pts_gt) > 0:
+                        # Distance points-plane (note that the value is alredy normalized)
+                        a, b, c, d = plane_model
+                        dist_gt = np.abs(a * pts_gt[:, 0] + b * pts_gt[:, 1] + c * pts_gt[:, 2] + d)
+                        
+                        # Number of points in the plane
+                        tp = np.sum(dist_gt < 0.15) 
+                        recall = tp / len(pts_gt)
+                        
+                        print(f"Total points considered: {len(pts_gt)}")
+                        print(f"Points matching with the found plane: {tp}")
+                        print(f"RECALL: {recall * 100:.2f}%")
+                        print("-" * 50)
+
+                obs_file = "obstacles.pcd" 
+
+                if os.path.exists(obs_file):
+                        pcd_obs = o3d.io.read_point_cloud(obs_file)
+                        pts_obs = np.asarray(pcd_obs.points)
+                        
+                        if len(pts_obs) > 0:
+                            a, b, c, d = plane_model
+                            dist_obs = np.abs(a * pts_obs[:, 0] + b * pts_obs[:, 1] + c * pts_obs[:, 2] + d)
+                            
+                            false_positives = np.sum(dist_obs < 0.15) 
+                            fpr = false_positives / len(pts_obs)
+                            
+                            print(f"Validating: {loss_to_validate.upper()}")
+                            print(f"Obstacles points: {len(pts_obs)}")
+                            print(f"False Positives: {false_positives}")
+                            print(f"FPR: {fpr * 100:.2f}%")
+                            print("-" * 50)
+
+            inliers_points = total_points[inliers_idx]
+
+            # Calculate the metrics
+            frame_metrics = compute_metrics(plane_model, prev_plane, inliers_points)
+
+            prev_plane = plane_model # Updating the variable for the next frame
+
+            print(f"[{loss_to_validate}] Frame Jitter: {frame_metrics['delta_angle_deg']:.3f} deg | Plane Thickness MAE: {frame_metrics['mae']:.4f} m")
 
             # Split Data
-            road_cloud = temp_pcd.select_by_index(inliers)
-            obstacle_cloud = temp_pcd.select_by_index(inliers, invert=True)
+            road_cloud = temp_pcd.select_by_index(inliers_idx)
+            obstacle_cloud = temp_pcd.select_by_index(inliers_idx, invert=True)
 
             # Paint Road RED for visualization clarity
             road_cloud.paint_uniform_color([1.0, 0, 0])
